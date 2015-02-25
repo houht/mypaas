@@ -309,7 +309,7 @@ dropping destroyed dropFail
 cattle日志 /var/log/cattle  
 koala_task日志 /var/log/koala/  
 cattle_monitor日志  /var/log/cattle  
-Koala日志，界面性质的  
+Koala日志，路由配置  
 
 
 
