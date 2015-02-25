@@ -1,0 +1,262 @@
+#!/usr/bin/python
+# -*- coding: UTF-8 -*-
+#*************************************
+#author:houht
+#create:201410
+#desc: 
+#*************************************
+import re
+
+
+from cattle.utils import XmlDom
+
+
+pattern = re.compile(r'(.*)\${(.*)}(.*)')
+
+
+# 参数对象
+class propertys:
+    ""
+    
+    def __init__(self):
+        ""
+        
+        self.name =  'property'
+        self.parameter = {}
+     
+    def get_value(self,key):
+        ""
+        
+        
+        return "aaaa"
+        
+        
+     
+# target对象
+class target:
+    ""
+    
+    def __init__(self):
+        ""
+        
+        self.name =  "target"
+        self.actions = {}
+
+        
+# 部署对象
+class deploy:
+    ""
+    
+    def __init__(self):
+        ""
+        
+        self.name =  'deploy'
+        self.operation = []
+        self.propertys = None
+    
+    def run(self):
+        ""
+        
+        # 循环列表，调用函数
+        for tmp in self.operation:
+            func = tmp['func']
+            param = tmp['param']
+            getattr(self,func)(param)
+
+    
+    def createVm(self,param):
+        ""
+        
+        print "createVm"
+        
+        for key in  param.keys():
+            tmp_value = param[key]
+            ma = pattern.match(tmp_value) 
+            if ma:
+                new_value = self.propertys.get_value(ma.groups()[1])
+                value = ma.groups()[0] + new_value + ma.groups()[2]
+            else:
+                value = tmp_value
+            print key,value
+    
+    def mkdir(self,param):
+        ""
+            
+        print "mkdir"
+            
+    def tgzIn(self,param):
+        ""
+            
+        print "tgzIn"  
+
+    def upload(self,param):
+        ""
+            
+        print "upload"     
+            
+    def setEvn(self,param):
+        ""
+            
+        print "setEvn" 
+            
+    def setHost(self,param):
+        ""
+            
+        print "setHost"  
+        
+        
+    def reg(self,param):
+        ""
+            
+        print "reg"  
+                       
+# 启动对象
+class start:
+    ""
+    
+    def __init__(self):
+        ""
+        
+        self.name =  'start'
+        self.operation = []
+        self.propertys = None
+    
+    def run(self):
+        ""
+            
+        # 循环列表，调用函数
+        for tmp in self.operation:
+            func = tmp['func']
+            param = tmp['param']
+            getattr(self,func)(param)
+    
+    def startVm(self,param):
+        ""
+            
+        pass
+           
+        
+# 停止对象
+class stop:
+    ""
+    
+    def __init__(self):
+        ""
+        
+        self.name =  'stop'
+        self.operation = []
+        self.propertys = None
+    
+    
+    def run(self):
+        ""
+        
+        # 循环列表，调用函数
+        for tmp in self.operation:
+            func = tmp['func']
+            param = tmp['param']
+            getattr(self,func)(param)
+    
+    def stutdown(self,param):
+        ""
+            
+        pass
+           
+
+# 删除对象
+class drop:
+    ""
+    
+    def __init__(self):
+        ""
+        
+        self.name =  'deploy'
+        self.operation = []
+        self.propertys = None
+    
+    
+    def run(self):
+        ""
+            
+        pass
+    
+    def dropVm(self,param):
+        ""
+            
+        pass
+           
+
+
+# app解析
+class AppService:
+    "application service"
+
+
+    def __init__(self,xml_file):
+        ""
+        
+        self.doc = XmlDom.getDoc(xml_file)
+        self.name = ''
+        self.serviceType = ''
+        
+        self.propertys = propertys()
+        self.target = target()
+        
+        #解析
+        self.parse()
+    
+    def parse(self):
+        ""
+        
+        # 导入xml
+        root = XmlDom.getRoot(self.doc)  
+        root_att = XmlDom.getAttributes(root)
+        # 得到xml的属性
+        self.serviceType = root_att['serviceType']
+        self.name = root_att['name']
+        
+        # 循环xml文件
+        xml_list = XmlDom.getChilds(root)
+        for node in xml_list:
+            
+            # 参数列表
+            if node.nodeName == self.propertys.name:
+                node_att = XmlDom.getAttributes(node)
+                self.propertys.parameter[node_att['name']] = node_att['value']
+            
+            # target列表
+            if node.nodeName == self.target.name:
+               
+                # 执行对象
+                action = XmlDom.getAttributes(node)['name']
+                instance  = eval(action)()
+                
+                #参数列表
+                instance.propertys = self.propertys
+                
+                child_node = XmlDom.getChilds(node)
+                # 保存每个执行对象下面的执行函数和参数
+                for child in child_node:
+                    tmp = {}
+                    tmp['func'] = child.nodeName
+                    tmp['param'] = XmlDom.getAttributes(child)
+                    if child.nodeName == "reg":
+                        pass
+                    
+                    instance.operation.append(tmp)
+                 
+                self.target.actions[action] = instance
+
+if __name__ == "__main__" :
+    aa = AppService('/root/test/tomcat_service.xml')
+    de =  aa.target.actions['deploy']
+    de.run()
+#    p = aa.propertys
+#    p.get_value()
+#    print p.parameter
+    
+    
+    
+    
+       
+        

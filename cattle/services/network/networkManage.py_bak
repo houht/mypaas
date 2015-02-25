@@ -1,0 +1,210 @@
+﻿#!/usr/bin/python
+# -*- coding: UTF-8 -*-
+
+# Copyright (C) 2014-2099 
+#
+# This file is part of cattle.
+#
+#*************************************
+#author:zhengqs
+#create:201410
+#desc: network service
+
+import os
+
+from cattle.utils import SqliteTools,CustomException,IpUtils,UUIDUtils,Dhcp
+from cattle.services import ConfigManage
+print 'dddd'
+TABLE_DHCP = "dhcp"
+TABLE_PROXYPORT = "proxyPort"
+TABLE_BUSINESSPORT="businessPort"
+MAC_PREFIX = "FC:FB:FE"
+
+class NetworkService:
+    '''network service'''
+    
+    def __init__(self):
+        self.conf = ConfigManage()
+        self.network_conf = self.conf.get_network_conf()
+        self.db_name = self.network_conf['db_path']
+
+    #将配置生成dchp的配置文件
+    def _conf2dchp(self, bridge_list):
+        hdcp_subnets = {}
+        for (k,v) in  bridge_list.items() :
+            options = {}
+            for(x,y) in v.items() :
+                if x not in ['subnet','subnet-mask','static-bootp'] :
+                    options[x] = y
+            hdcp_subnets[k] = {'ip':v['subnet'], 'mask':v['subnet-mask'], 'options':options, 'hosts':[]}
+        return hdcp_subnets;
+    
+    #想dhcp net中添加host
+    def _addHost2dhcp(self, hdcp_subnets, groupName, ipAddress, macAddress, hostname, ifName) :
+        if groupName not in hdcp_subnets :
+            return
+        host = {}
+        if hostname in [None, ''] :
+            host = {'hostname':ifName, 'options':{'hardware ethernet':macAddress,'fixed-address':ipAddress}}
+        else:
+            host = {'hostname':ifName, 'options':{'option host-name':hostname,'hardware ethernet':macAddress,'fixed-address':ipAddress}}
+        
+        if 'hosts' not in hdcp_subnets[groupName] :
+            hdcp_subnets[groupName]['hosts'] = []
+        hosts = hdcp_subnets[groupName]['hosts'];
+        hosts.append(host)
+        return
+        
+    
+    #注册虚拟机固定IP
+    def fixedIpRegister(self, groupName=None, hostName=None, ifName=None, macAddress=None, ipAddress=None):
+        '''
+        groupName表示网桥的名称，非必填，默认读取配置文件中的default_bridge字段的值
+        hostName表示虚拟机的主机名称，非必填
+        ifName 虚拟机的网口名称，非必填
+        macAddress 虚拟机的网口的mac地址，非必填
+        ipAddress 虚拟机的静态IP，非必填
+        ifName 网口名称
+        '''
+        if groupName in [None, ''] :
+            groupName = self.network_conf['default_bridge']
+        bridge_list = self.network_conf['bridge']
+        #根据配置文件初始化dhcp配置
+        
+        hdcp_subnets = self._conf2dchp(bridge_list);
+        
+        #已使用ip和已经使用mac
+        used_ips = []
+        used_mac = []
+        #读取dhcp数据表
+        sql = "select ipAddress, macAddress, groupName, hostname, ifName  from %s" % TABLE_DHCP
+        sql_tools = SqliteTools(self.db_name)
+        item = sql_tools.fetchall(sql)
+
+        for it in item :
+            used_ips.append(IpUtils.ip2int(it[0]))
+            
+            macs = it[1].split(':')
+            mac_int = (int(macs[3],16)<<16) + (int(macs[4],16)<<8) + (int(macs[5],16))
+            used_mac.append(mac_int)
+            
+            #添加host到subnet中
+            self._addHost2dhcp(hdcp_subnets, it[2], it[0], it[1], it[3], it[4])
+        
+        used_ips.sort()
+        used_mac.sort()
+        
+        #获取IP
+        if ipAddress in [None, ''] :
+            #开始和结束ip
+            static_bootp = bridge_list[groupName]['static-bootp']
+            range = static_bootp.split()
+            begin_ip = IpUtils.ip2int(range[0])
+            end_ip = IpUtils.ip2int(range[1])
+            
+            #获取ip
+            if len(used_ips) == 0 :
+                ipAddress = IpUtils.int2ip(begin_ip)
+            elif used_ips[len(used_ips)-1] < end_ip :
+                ipAddress = IpUtils.int2ip(used_ips[len(used_ips)-1] + 1)
+            else :
+                for num in range(begin_ip, end_ip + 1) :
+                    if num not in used_ips :
+                        ipAddress = IpUtils.int2ip(num)
+        #验证ip是否获得
+        if ipAddress in [None, ''] :
+            raise CustomNotFoundException("unable to allocate ip,no available ip, please configure the file(cattle.conf) bridge:%s[static-bootp] "%groupName)
+        #网口的名称
+        if ifName in [None, ''] :
+            ifName = "p%s"%IpUtils.ip_remove_point(ipAddress)
+        #网口mac地址 
+        if macAddress in [None, ''] :
+            begin_mac = 0x010101
+            end_mac = 0xffffff
+            select_mac = begin_mac
+            if len(used_mac) == 0 :
+                select_mac = begin_mac
+            elif used_mac[len(used_mac)-1] < end_mac :
+                select_mac = used_mac[len(used_mac)-1] + 1
+            else :
+                for num in range(begin_mac, end_mac + 1) :
+                    if num not in used_mac :
+                        select_mac = num
+            macAddress = "%s:%02x:%02x:%02x" % (MAC_PREFIX, (select_mac>>16) & 0xff, (select_mac>>8) & 0xff, (select_mac>>0) & 0xff)
+        
+        #将新生产的ip添加到subnet中
+        hdcp_subnet_list = []
+        for (k,v) in  hdcp_subnets.items():
+            hdcp_subnet_list.append(v)
+        self._addHost2dhcp(hdcp_subnets, groupName, ipAddress, macAddress, hostName, ifName)
+        #写dhcp文件        
+        dhcp_obj = Dhcp(self.network_conf['dhcp_conf'], self.network_conf['dhcp_service'])
+        dhcp_obj.write_conf(hdcp_subnet_list, None, None)
+        dhcp_obj.restart()
+        #插入数据表
+        sql = "insert into %s(id, groupName, macAddress, ipAddress, hostname, ifName) values(?,?,?,?,?,?)" % TABLE_DHCP
+        data = [(UUIDUtils.getId(), groupName, macAddress, ipAddress, hostName, ifName)]
+        sql_tools.save(sql,data)
+        return {"groupName":groupName, "ipAddress":ipAddress, "macAddress":macAddress, "hostName":hostName, "ifName":ifName}
+
+    #创建业务表
+    def create_network_table(self):
+        '''
+        create sqlite table
+        '''
+        
+        '''
+            id, 主键ID uuid
+            groupName,  对应的桥名称
+            macAddress, 虚拟的mack地址
+            ipAddress,  虚拟的静态IP
+            hostname,   虚拟机主机名
+            ifName      虚拟机网口的名
+        '''
+        create_dhcp_table_sql = '''CREATE TABLE `dhcp` (
+                            `id` varchar(64) PRIMARY KEY NOT NULL,
+                            `groupName` varchar(64) NOT NULL,
+                            `macAddress` varchar(64) NOT NULL,
+                            `ipAddress` varchar(64) NOT NULL,
+                            `hostname` varchar(256) NOT NULL,
+                            `ifName` varchar(64) NOT NULL
+                        )'''
+        '''
+            id,主键ID uuid
+            groupName, 对应的桥名称
+            dip, 通过groupName从配置中取得，外网IP 
+            dPort, 对外端口
+            tIp,  虚拟机IP
+            tPort 虚拟机端口
+        '''
+        create_proxyPort_table_sql = '''CREATE TABLE `proxyPort` (
+                            `id` varchar(64) PRIMARY KEY NOT NULL,
+                            `groupName` varchar(64) NOT NULL,
+                            `dip` varchar(64) NOT NULL,
+                            `dPort` int,
+                            `tIp` varchar(64) NOT NULL,
+                            `tPort` varchar(64) NOT NULL
+                        )'''
+        '''
+            id,主键ID uuid
+            pType, 1：vnc端口，2：其它业务端口
+        '''
+        create_businessPort_table_sql = '''CREATE TABLE `businessPort` (
+                            `id` varchar(64) PRIMARY KEY NOT NULL,
+                            `pType` varchar(5) NOT NULL,
+                            `dPort` int
+                        )'''
+                        
+        network_conf = self.conf.get_network_conf()
+        network_db = network_conf['db_path']
+        sql_tools = SqliteTools(network_db)
+        sql_tools.create_table(create_dhcp_table_sql)
+        sql_tools.create_table(create_proxyPort_table_sql)
+        sql_tools.create_table(create_businessPort_table_sql)
+#if __name__ == "__main__":
+#networksvc = NetworkService()
+#networksvc.create_network_table()
+#print 'ssss---------'
+#print networksvc.fixedIpRegister( hostName="testvm")
+#print 'ssss---------'
+print 'ssss----'
